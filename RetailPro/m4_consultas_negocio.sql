@@ -1,14 +1,13 @@
--- ------------------------------------------------------- 
+-- --------------------------------------------------------------- 
 -- RetailPro — Pre-entrega 4: Consultas SQL de negocio
 -- TÍTULO: Extrayendo métricas clave con SQL
 -- Base de datos: Ventas_Tech_DB (creada en el Módulo 3)
 -- ALUMNO: Somavilla Ignacio
--- -------------------------------------------------------
+-- ----------------------------------------------------------------
 
 USE Ventas_Tech_DB;
--- Se trabaja solo sobre la tabla ventas. Cada fila de la tabla
--- se considera un pedido, y el importe de cada pedido se calcula como=  cantidad * precio_unitario.
--- -------------------------------------------------------
+-- Se trabaja sobre la tabla creada en la pre-entrega anterior
+-- ----------------------------------------------------------------
 -- Consulta 1 — Resumen ejecutivo mensual
 -- Total facturado, cantidad de pedidos y ticket promedio por mes.
 
