@@ -16,7 +16,7 @@ SELECT
     MONTH(fecha_venta)                                     AS mes,
     SUM(cantidad * precio_unitario)                        AS total_facturado,
     COUNT(*)                                               AS cantidad_pedidos,
-    AVG(cantidad * precio_unitario)                        AS ticket_promedio,
+    AVG(cantidad * precio_unitario)                        AS ticket_promedio
 FROM ventas
 GROUP BY MONTH(fecha_venta);
 
