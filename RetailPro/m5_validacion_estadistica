@@ -1,0 +1,190 @@
+-- -------------------------------------------------------------------
+-- RetailPro — Pre-entrega 10: Validación estadística del proyecto
+-- Base de datos: Ventas_Tech_DB (Módulo 3) + vista dbo.vw_ventas_base 
+-- Motor: SQL Server (SSMS)
+-- ALUMNO: Somavilla Ignacio
+-- -------------------------------------------------------------------
+
+USE Ventas_Tech_DB;
+GO
+
+
+-- ===================================================================
+-- PARTE 1 — Caso guiado: consistencia de ventas de dos sucursales
+-- ===================================================================
+-- Tabla auxiliar con las ventas diarias de la semana (5 días laborales).
+DROP TABLE IF EXISTS ventas_semana;
+CREATE TABLE ventas_semana (
+    dia      INT           NOT NULL,
+    sucursal VARCHAR(10)   NOT NULL,
+    venta    DECIMAL(10,2) NOT NULL      -- dinero: DECIMAL, nunca FLOAT
+);
+
+INSERT INTO ventas_semana (dia, sucursal, venta) VALUES
+  (1, 'Norte',  500), (2, 'Norte',  510), (3, 'Norte',  490), (4, 'Norte',  505), (5, 'Norte',  495),
+  (1, 'Sur',    100), (2, 'Sur',    900), (3, 'Sur',     50), (4, 'Sur',   1200), (5, 'Sur',    250);
+
+-- 1.1 Media, rango y desviación estándar muestral por sucursal
+SELECT
+    sucursal,
+    AVG(venta)              AS media,
+    MAX(venta) - MIN(venta) AS rango,
+    STDEV(venta)            AS desvio_muestral
+FROM ventas_semana
+GROUP BY sucursal;
+
+-- 1.2 Mediana por sucursal 
+SELECT DISTINCT
+    sucursal,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY venta) OVER (PARTITION BY sucursal) AS mediana
+FROM ventas_semana;
+
+
+-- ===================================================================
+-- PARTE 2 — Validación estadística de RetailPro
+-- ===================================================================
+-- total_venta = cantidad * precio_unitario (precio al momento de la venta).
+GO
+CREATE OR ALTER VIEW dbo.vw_ventas_base AS
+SELECT
+    v.id_venta,
+    v.fecha_venta,
+    c.id_cliente,
+    c.nombre                        AS cliente,
+    c.ciudad,
+    p.id_producto,
+    p.nombre_producto               AS producto,
+    cat.nombre_categoria            AS categoria,
+    v.cantidad,
+    v.precio_unitario,
+    v.cantidad * v.precio_unitario  AS total_venta
+FROM ventas AS v
+INNER JOIN clientes   AS c   ON v.id_cliente   = c.id_cliente
+INNER JOIN productos  AS p   ON v.id_producto  = p.id_producto
+INNER JOIN categorias AS cat ON p.id_categoria = cat.id_categoria;
+GO
+
+-- Control: 10 filas y $6.444, igual que en M4, M5 y M9
+SELECT COUNT(*) AS filas, SUM(total_venta) AS total FROM dbo.vw_ventas_base;
+
+
+-- -------------------------------------------------------------------
+-- 2a) Ticket promedio real vs. representativo: media vs. mediana
+-- -------------------------------------------------------------------
+SELECT DISTINCT
+    COUNT(*)           OVER () AS cantidad_ventas,
+    AVG(total_venta)   OVER () AS media,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_venta) OVER () AS mediana,
+    STDEV(total_venta) OVER () AS desvio_muestral
+FROM dbo.vw_ventas_base;
+
+
+-- ¿Cuántas ventas quedan por debajo del ticket promedio?
+SELECT COUNT(*) AS ventas_bajo_la_media
+FROM dbo.vw_ventas_base
+WHERE total_venta < (SELECT AVG(total_venta) FROM dbo.vw_ventas_base);
+-- Esperado: 7 de 10
+
+-- Las dos poblaciones de ventas: Computación vs. el resto del catálogo
+SELECT
+    CASE WHEN categoria = 'Computación' THEN 'Computación' ELSE 'Accesorios, audio y almacenamiento' END AS grupo,
+    COUNT(*)          AS ventas,
+    MIN(total_venta)  AS minimo,
+    MAX(total_venta)  AS maximo,
+    AVG(total_venta)  AS ticket_promedio
+FROM dbo.vw_ventas_base
+GROUP BY CASE WHEN categoria = 'Computación' THEN 'Computación' ELSE 'Accesorios, audio y almacenamiento' END;
+-- Esperado: Computación 4 ventas, 450 a 2400, promedio 1237,50
+--           Resto       6 ventas, 120 a 390,  promedio 249
+
+
+-- -------------------------------------------------------------------
+-- 2b) Detección de outliers con el método IQR
+-- -------------------------------------------------------------------
+-- Paso 1: cuartiles, IQR y límites
+WITH cuartiles AS (
+    SELECT DISTINCT
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY total_venta) OVER () AS q1,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY total_venta) OVER () AS q3
+    FROM dbo.vw_ventas_base
+)
+SELECT
+    q1,
+    q3,
+    q3 - q1                AS iqr,
+    q1 - 1.5 * (q3 - q1)   AS limite_inferior,
+    q3 + 1.5 * (q3 - q1)   AS limite_superior
+FROM cuartiles;
+
+
+-- Paso 2: clasificar cada venta contra los límites
+WITH cuartiles AS (
+    SELECT DISTINCT
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY total_venta) OVER () AS q1,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY total_venta) OVER () AS q3
+    FROM dbo.vw_ventas_base
+),
+limites AS (
+    SELECT
+        q1 - 1.5 * (q3 - q1) AS limite_inferior,
+        q3 + 1.5 * (q3 - q1) AS limite_superior
+    FROM cuartiles
+)
+SELECT
+    v.id_venta,
+    v.fecha_venta,
+    v.cliente,
+    v.ciudad,
+    v.producto,
+    v.cantidad,
+    v.precio_unitario,
+    v.total_venta,
+    CASE
+        WHEN v.total_venta < l.limite_inferior THEN 'Outlier inferior'
+        WHEN v.total_venta > l.limite_superior THEN 'Outlier superior'
+        ELSE 'Normal'
+    END AS clasificacion
+FROM dbo.vw_ventas_base AS v
+CROSS JOIN limites AS l
+ORDER BY v.total_venta DESC;
+-- Esperado: 1 outlier superior (venta 1, María López, 2 x Laptop Pro 15 = $2.400); 9 normales
+
+-- Paso 3: investigar el outlier antes de decidir. ¿El precio coincide con el catálogo?
+SELECT
+    v.id_venta,
+    v.producto,
+    v.cantidad,
+    v.precio_unitario,
+    p.precio  AS precio_catalogo,
+    p.stock   AS stock_actual
+FROM dbo.vw_ventas_base AS v
+INNER JOIN productos AS p ON v.id_producto = p.id_producto
+WHERE v.id_venta = 1;
+
+-- Paso 4: sensibilidad. 
+WITH cuartiles AS (
+    SELECT DISTINCT
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY total_venta) OVER () AS q1,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY total_venta) OVER () AS q3
+    FROM dbo.vw_ventas_base
+)
+SELECT DISTINCT
+    AVG(v.total_venta) OVER () AS media_sin_outliers,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.total_venta) OVER () AS mediana_sin_outliers
+FROM dbo.vw_ventas_base AS v
+CROSS JOIN cuartiles AS q
+WHERE v.total_venta BETWEEN q.q1 - 1.5 * (q.q3 - q.q1) AND q.q3 + 1.5 * (q.q3 - q.q1);
+
+
+-- -------------------------------------------------------------------
+-- 2c) Conexión con el dashboard: peso del outlier por ciudad
+-- -------------------------------------------------------------------
+SELECT
+    ciudad,
+    COUNT(*)          AS ventas,
+    SUM(total_venta)  AS total,
+    AVG(total_venta)  AS ticket_promedio
+FROM dbo.vw_ventas_base
+GROUP BY ciudad
+ORDER BY total DESC;
+
